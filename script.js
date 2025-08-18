@@ -50,17 +50,17 @@ function shuffleArray(array, seed) {
     }
 }
 
-async function splitImage(dataUrl) {
-    return new Promise((resolve) => {
+async function splitImage(imageUrl) {
+    return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
+            let canvas = document.createElement('canvas');
+            let ctx = canvas.getContext('2d');
             canvas.width = img.width;
             canvas.height = img.height;
             ctx.drawImage(img, 0, 0);
 
-            const blocks = [];
+            let blocks = [];
             const cols = Math.ceil(img.width / BLOCK_SIZE);
             const rows = Math.ceil(img.height / BLOCK_SIZE);
 
@@ -72,6 +72,13 @@ async function splitImage(dataUrl) {
                     blocks.push(imageData);
                 }
             }
+            
+            // Explicitly clear the full image from the canvas now that we have the blocks
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.width = 0;
+            canvas.height = 0;
+            canvas = null;
+            ctx = null;
 
             const seed = Math.floor(Math.random() * 1000000000);
             const indices = Array.from({ length: blocks.length }, (_, i) => i);
@@ -83,6 +90,8 @@ async function splitImage(dataUrl) {
             
             const uploaderBlocks = uploaderIndices.map(i => ({ index: i, data: Array.from(blocks[i].data), width: blocks[i].width, height: blocks[i].height }));
             const hostBlocks = hostIndices.map(i => ({ index: i, data: Array.from(blocks[i].data), width: blocks[i].width, height: blocks[i].height }));
+            
+            blocks = null; // Release the array holding all blocks
 
             resolve({
                 uploaderPayload: { seed, blocks: uploaderBlocks },
@@ -90,7 +99,10 @@ async function splitImage(dataUrl) {
                 dimensions: { width: img.width, height: img.height }
             });
         };
-        img.src = dataUrl;
+        img.onerror = (err) => {
+            reject(new Error("Failed to load image for splitting."));
+        };
+        img.src = imageUrl;
     });
 }
 
@@ -357,51 +369,49 @@ async function handleImageUpload(event) {
         return;
     }
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-        try {
-            const { uploaderPayload, hostPayload, dimensions } = await splitImage(e.target.result);
-            
-            // Upload host's half
-            const hostHalfBlob = new Blob([JSON.stringify(hostPayload)], { type: 'application/json' });
-            const hostHalfUrl = await websim.upload(hostHalfBlob);
+    const objectURL = URL.createObjectURL(file);
+    try {
+        const { uploaderPayload, hostPayload, dimensions } = await splitImage(objectURL);
+        
+        // Upload host's half
+        const hostHalfBlob = new Blob([JSON.stringify(hostPayload)], { type: 'application/json' });
+        const hostHalfUrl = await websim.upload(hostHalfBlob);
 
-            const imageId = `img_${Date.now()}_${room.clientId}`;
-            
-            // Store uploader's half locally
-            localImageHalves[imageId] = uploaderPayload;
-            localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
+        const imageId = `img_${Date.now()}_${room.clientId}`;
+        
+        // Store uploader's half locally
+        localImageHalves[imageId] = uploaderPayload;
+        localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
 
-            // Grant mutual permission to uploader and host by default
-            const uploaderVisibility = {
-                [room.clientId]: true, // Uploader grants self
-                [hostInfo.clientId]: true // Uploader grants host
-            };
-            const hostVisibility = {
-                [room.clientId]: true, // Host grants uploader
-                [hostInfo.clientId]: true // Host grants self
-            };
+        // Grant mutual permission to uploader and host by default
+        const uploaderVisibility = {
+            [room.clientId]: true, // Uploader grants self
+            [hostInfo.clientId]: true // Uploader grants host
+        };
+        const hostVisibility = {
+            [room.clientId]: true, // Host grants uploader
+            [hostInfo.clientId]: true // Host grants self
+        };
 
-            room.updateRoomState({
-                images: {
-                    [imageId]: {
-                        uploaderId: room.clientId,
-                        hostHalfUrl: hostHalfUrl,
-                        dimensions: dimensions,
-                        uploaderVisibility,
-                        hostVisibility,
-                    }
+        room.updateRoomState({
+            images: {
+                [imageId]: {
+                    uploaderId: room.clientId,
+                    hostHalfUrl: hostHalfUrl,
+                    dimensions: dimensions,
+                    uploaderVisibility,
+                    hostVisibility,
                 }
-            });
-        } catch (error) {
-            console.error("Upload failed:", error);
-            alert("Upload failed. Please try again.");
-        } finally {
-            uploadProgress.classList.add('hidden');
-            imageUploader.value = ''; // Reset input
-        }
-    };
-    reader.readAsDataURL(file);
+            }
+        });
+    } catch (error) {
+        console.error("Upload failed:", error);
+        alert("Upload failed. Please try again.");
+    } finally {
+        URL.revokeObjectURL(objectURL); // Clean up the object URL to free memory
+        uploadProgress.classList.add('hidden');
+        imageUploader.value = ''; // Reset input
+    }
 }
 
 function handlePermissionChange(event) {
