@@ -183,10 +183,30 @@ function renderGallery() {
 
         const isMyImage = image.uploaderId === room.clientId;
         const uploader = room.peers[image.uploaderId]?.username || '...';
+        const uploaderIsOnline = !!room.peers[image.uploaderId];
 
         const hasHostPerm = image.hostVisibility?.[room.clientId];
         const hasUploaderPerm = image.uploaderVisibility?.[room.clientId];
-        const canISee = (hasHostPerm && hasUploaderPerm) || isMyImage;
+        const canISee = hasHostPerm && hasUploaderPerm;
+
+        let statusText = '';
+        if (isMyImage) {
+            statusText = `You are the uploader.
+                <br>
+                ${hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}
+            `;
+        } else if (isHost) {
+            statusText = `You are the host.
+                <br>
+                ${hasUploaderPerm ? '✅ Uploader granted you access' : '❌ Uploader permission needed'}
+            `;
+        } else {
+            statusText = `
+                ${hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed'}
+                <br>
+                ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}
+            `;
+        }
 
         card.innerHTML = `
             <div class="image-placeholder">
@@ -194,13 +214,8 @@ function renderGallery() {
                 ${!canISee ? `<div class="locked-overlay">🔒</div>` : ''}
             </div>
             <div class="image-controls">
-                <p>Uploaded by: ${isMyImage ? 'You' : uploader}</p>
-                <p>Status: 
-                    ${isMyImage ? 'You are the uploader.' : 
-                        (hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed')}
-                    <br> 
-                    ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}
-                </p>
+                <p>Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}</p>
+                <p>Status: ${statusText}</p>
                 <div class="permissions" id="perms-${imageId}"></div>
             </div>
         `;
@@ -283,6 +298,15 @@ async function handleImageUpload(event) {
     if (!file) return;
 
     uploadProgress.classList.remove('hidden');
+
+    const hostInfo = getHostInfo();
+    if (!hostInfo.isOnline || !hostInfo.clientId) {
+        alert("Host is offline. Cannot upload image.");
+        uploadProgress.classList.add('hidden');
+        imageUploader.value = '';
+        return;
+    }
+
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
@@ -298,9 +322,15 @@ async function handleImageUpload(event) {
             localImageHalves[imageId] = uploaderPayload;
             localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
 
-            // Update room state
-            const uploaderVisibility = { [room.clientId]: true };
-            const hostVisibility = { [room.clientId]: true };
+            // Grant mutual permission to uploader and host by default
+            const uploaderVisibility = {
+                [room.clientId]: true, // Uploader grants self
+                [hostInfo.clientId]: true // Uploader grants host
+            };
+            const hostVisibility = {
+                [room.clientId]: true, // Host grants uploader
+                [hostInfo.clientId]: true // Host grants self
+            };
 
             room.updateRoomState({
                 images: {
