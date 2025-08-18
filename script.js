@@ -323,6 +323,9 @@ function renderPermissions(imageId, image, isMyImage) {
         const hostPerms = document.createElement('div');
         hostPerms.innerHTML = `<h4>Host Visibility</h4>`;
         for (const clientId in room.peers) {
+            // Don't show checkbox for the host to grant permission to themself.
+            if (clientId === room.clientId) continue;
+
             const peer = room.peers[clientId];
             const isChecked = image.hostVisibility?.[clientId] || false;
             hostPerms.innerHTML += `
@@ -340,6 +343,9 @@ function renderPermissions(imageId, image, isMyImage) {
         const uploaderPerms = document.createElement('div');
         uploaderPerms.innerHTML = `<h4>Your Visibility</h4>`;
         for (const clientId in room.peers) {
+            // Don't show checkbox for the uploader to grant permission to themself.
+            if (clientId === room.clientId) continue;
+            
             const peer = room.peers[clientId];
             const isChecked = image.uploaderVisibility?.[clientId] || false;
             uploaderPerms.innerHTML += `
