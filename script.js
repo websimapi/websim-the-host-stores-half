@@ -275,13 +275,12 @@ async function main() {
     }
     hostIdElem.textContent = room.roomState.hostId;
 
-
     room.subscribePresence(() => {
         // If host leaves, elect a new one
         if (!room.peers[room.roomState.hostId]) {
             const newHostId = Object.keys(room.peers)[0];
             if (newHostId) {
-                 room.updateRoomState({ hostId: newHostId });
+                room.updateRoomState({ hostId: newHostId });
             }
         }
         render();
@@ -293,11 +292,6 @@ async function main() {
         hostIndicatorElem.textContent = isHost ? '(You are the host)' : '';
         render();
     });
-
-    room.onmessage = (event) => {
-        // Presence changes are handled by `subscribePresence`.
-        // This is for other event types.
-    };
     
     render();
 
