@@ -8,6 +8,7 @@ const uploadProgress = document.getElementById('upload-progress');
 const imageGallery = document.getElementById('image-gallery');
 const userList = document.getElementById('user-list');
 const hostOfflineMessage = document.getElementById('host-offline-message');
+const refreshUsersBtn = document.getElementById('refresh-users-btn');
 
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
@@ -308,30 +309,12 @@ async function main() {
     room.subscribeRoomState(() => {
         render();
     });
-
-    // Add message handler for connection events
-    room.onmessage = (event) => {
-        const data = event.data;
-        switch (data.type) {
-            case "connected":
-                console.log(`User connected: ${data.username} (${data.clientId})`);
-                // Force re-render when someone connects
-                render();
-                break;
-            case "disconnected":
-                console.log(`User disconnected: ${data.username} (${data.clientId})`);
-                // Force re-render when someone disconnects
-                render();
-                break;
-            default:
-                console.log("Received event:", data);
-        }
-    };
     
     render();
 
     imageUploader.addEventListener('change', handleImageUpload);
     document.body.addEventListener('change', handlePermissionChange);
+    refreshUsersBtn.addEventListener('click', render);
 }
 
 main();
