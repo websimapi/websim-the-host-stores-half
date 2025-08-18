@@ -12,6 +12,7 @@ const refreshUsersBtn = document.getElementById('refresh-users-btn');
 
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
+let receivedImageHalves = {}; // In-memory cache for halves received from other users
 let creator = null;
 const BLOCK_SIZE = 16; // The size of each block for splitting the image
 
@@ -149,9 +150,13 @@ function updateHostStatusUI() {
 }
 
 function render() {
-    updateHostStatusUI();
-    renderUserList();
-    renderGallery();
+    try {
+        updateHostStatusUI();
+        renderUserList();
+        renderGallery();
+    } catch (error) {
+        console.error("Error during render:", error);
+    }
 }
 
 function renderUserList() {
@@ -187,13 +192,13 @@ function renderGallery() {
 
         const hasHostPerm = image.hostVisibility?.[room.clientId];
         const hasUploaderPerm = image.uploaderVisibility?.[room.clientId];
-        const canISee = hasHostPerm && hasUploaderPerm;
+        const canISee = (isMyImage || hasUploaderPerm) && (isHost || hasHostPerm);
 
         let statusText = '';
         if (isMyImage) {
             statusText = `You are the uploader.
                 <br>
-                ${hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}
+                ${isHost || hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}
             `;
         } else if (isHost) {
             statusText = `You are the host.
@@ -216,6 +221,7 @@ function renderGallery() {
             <div class="image-controls">
                 <p>Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}</p>
                 <p>Status: ${statusText}</p>
+                <div class="image-info" id="info-${imageId}"></div>
                 <div class="permissions" id="perms-${imageId}"></div>
             </div>
         `;
@@ -225,6 +231,7 @@ function renderGallery() {
             loadImage(imageId, image);
         }
 
+        renderImageInfo(imageId, image, isMyImage);
         renderPermissions(imageId, image, isMyImage);
     });
 }
@@ -234,21 +241,64 @@ async function loadImage(imageId, image) {
     if (!canvas) return;
 
     try {
-        // Uploader's half is always from local storage
-        const uploaderPayload = localImageHalves[imageId];
+        let uploaderPayload = null;
+
+        if (image.uploaderId === room.clientId) {
+            // I am the uploader, I have the half locally.
+            uploaderPayload = localImageHalves[imageId];
+        } else {
+            // I am not the uploader, check if I've received the half.
+            uploaderPayload = receivedImageHalves[imageId];
+            if (!uploaderPayload) {
+                // If not, and uploader is online, request it.
+                if (room.peers[image.uploaderId]) {
+                    console.log(`Requesting uploader half for ${imageId} from ${image.uploaderId}`);
+                    room.requestPresenceUpdate(image.uploaderId, {
+                        type: 'requestImageHalf',
+                        imageId: imageId,
+                    });
+                }
+                return; // Wait for the half to be received.
+            }
+        }
         
         // Host's half is fetched from the URL
         const response = await fetch(image.hostHalfUrl);
+        if (!response.ok) throw new Error(`Failed to fetch host half: ${response.statusText}`);
         const hostPayload = await response.json();
         
         if (uploaderPayload && hostPayload) {
             await combineHalves(uploaderPayload, hostPayload, image.dimensions, canvas);
         } else {
-            console.error(`Missing payload half for image ${imageId}`);
+            console.error(`Missing a payload half for image ${imageId}`);
         }
     } catch (error) {
-        console.error("Error combining image halves:", error);
+        console.error(`Error loading image ${imageId}:`, error);
     }
+}
+
+function renderImageInfo(imageId, image, isMyImage) {
+    const infoContainer = document.getElementById(`info-${imageId}`);
+    if (!infoContainer) return;
+
+    let totalBlocks = 0;
+    // Calculate total blocks from dimensions.
+    if(image.dimensions) {
+        const cols = Math.ceil(image.dimensions.width / BLOCK_SIZE);
+        const rows = Math.ceil(image.dimensions.height / BLOCK_SIZE);
+        totalBlocks = cols * rows;
+    }
+    
+    let myBlocks = 0;
+    if (isMyImage) {
+        myBlocks = localImageHalves[imageId]?.blocks.length || 0;
+    } else if (isHost) {
+        // As host, we don't store blocks, but we know our half exists at the URL.
+        // A more complex implementation could fetch and count, but this is a good approximation.
+        myBlocks = Math.floor(totalBlocks / 2);
+    }
+
+    infoContainer.innerHTML = `You hold ${myBlocks} of ${totalBlocks} blocks.`;
 }
 
 function renderPermissions(imageId, image, isMyImage) {
@@ -390,6 +440,38 @@ async function main() {
     room.subscribeRoomState(() => {
         render();
     });
+
+    room.subscribePresenceUpdateRequests((updateRequest, fromClientId) => {
+        if (updateRequest.type === 'requestImageHalf') {
+            const { imageId } = updateRequest;
+            const image = room.roomState.images?.[imageId];
+            const uploaderHalf = localImageHalves[imageId];
+
+            // I must be the uploader, have the half, and have granted permission
+            if (image && image.uploaderId === room.clientId && uploaderHalf && image.uploaderVisibility?.[fromClientId]) {
+                console.log(`Sending half for ${imageId} to ${fromClientId}`);
+                room.send({
+                    type: 'imageHalfData',
+                    recipientId: fromClientId,
+                    imageId: imageId,
+                    payload: uploaderHalf
+                });
+            }
+        }
+    });
+
+    room.onmessage = (event) => {
+        const data = event.data;
+        if (data.type === 'imageHalfData' && data.recipientId === room.clientId) {
+            console.log(`Received half for ${data.imageId}`);
+            receivedImageHalves[data.imageId] = data.payload;
+            // Re-render the specific image now that we have the data
+            const image = room.roomState.images?.[data.imageId];
+            if (image) {
+                loadImage(data.imageId, image);
+            }
+        }
+    };
     
     render();
 
