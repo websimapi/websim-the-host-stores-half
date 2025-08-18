@@ -9,6 +9,8 @@ const imageGallery = document.getElementById('image-gallery');
 const userList = document.getElementById('user-list');
 const hostOfflineMessage = document.getElementById('host-offline-message');
 const refreshUsersBtn = document.getElementById('refresh-users-btn');
+const hostControls = document.getElementById('host-controls');
+const contentCheckToggle = document.getElementById('content-check-toggle');
 
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
@@ -18,19 +20,53 @@ const BLOCK_SIZE = 16; // The size of each block for splitting the image
 
 // --- Host/Creator Utilities ---
 
-function getHostInfo() {
-    if (!creator) return { clientId: null, username: 'Unknown', isOnline: false };
+async function getCreatorUsername() {
+    if (!creator) {
+        creator = await window.websim.getCreator();
+    }
+    return creator.username;
+}
+
+async function getHostInfo() {
+    const creatorUsername = await getCreatorUsername();
+    if (!creatorUsername) return { clientId: null, username: 'Unknown', isOnline: false };
     
     for (const clientId in room.peers) {
-        if (room.peers[clientId].username === creator.username) {
-            return { clientId: clientId, username: creator.username, isOnline: true };
+        if (room.peers[clientId].username === creatorUsername) {
+            return { clientId: clientId, username: creatorUsername, isOnline: true };
         }
     }
     
-    return { clientId: null, username: creator.username, isOnline: false };
+    return { clientId: null, username: creatorUsername, isOnline: false };
 }
 
-// --- Image Processing Utilities ---
+// --- Image Processing & Security Utilities ---
+
+// Simple SHA-256 hashing for file verification
+async function hashFile(file) {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Mock content check function. In a real application, this would call a server-side API.
+async function checkImageContent(imageUrl) {
+    console.log(`Checking image content for: ${imageUrl}`);
+    // Simulate network delay and analysis
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // In a real scenario, you'd fetch the image, send it to a service like AWS Rekognition or a custom model.
+    // For this demo, we'll use a placeholder check.
+    // Let's flag any image that has "flagged" in its filename for demonstration.
+    if (imageUrl.toLowerCase().includes('flagged')) {
+        console.warn("Content check FAILED for:", imageUrl);
+        return { safe: false, reason: "Content Flagged" };
+    }
+    
+    console.log("Content check PASSED for:", imageUrl);
+    return { safe: true };
+}
 
 // Simple seeded pseudo-random number generator (LCG)
 function createPRNG(seed) {
@@ -139,14 +175,17 @@ async function combineHalves(uploaderPayload, hostPayload, dimensions, targetCan
     });
 }
 
-
 // --- UI Rendering ---
 
-function updateHostStatusUI() {
-    const hostInfo = getHostInfo();
+async function updateHostStatusUI() {
+    const hostInfo = await getHostInfo();
 
     hostIdElem.textContent = hostInfo.username;
     isHost = hostInfo.clientId === room.clientId;
+
+    if (isHost) {
+        hostControls.classList.remove('hidden');
+    }
 
     if (hostInfo.isOnline) {
         hostIndicatorElem.textContent = isHost ? '(You are the host)' : '(Online)';
@@ -161,19 +200,31 @@ function updateHostStatusUI() {
     }
 }
 
-function render() {
+async function render() {
     try {
-        updateHostStatusUI();
-        renderUserList();
+        await updateHostStatusUI();
+        updateContentCheckToggle();
+        await renderUserList();
         renderGallery();
+
+        if (isHost) {
+            await processPendingImages();
+        }
     } catch (error) {
         console.error("Error during render:", error);
     }
 }
 
+function updateContentCheckToggle() {
+    const contentCheckEnabled = room.roomState.contentCheckEnabled || false;
+    if (contentCheckToggle.checked !== contentCheckEnabled) {
+        contentCheckToggle.checked = contentCheckEnabled;
+    }
+}
+
 function renderUserList() {
     userList.innerHTML = '';
-    const hostInfo = getHostInfo();
+    const hostInfo = await getHostInfo();
     for (const clientId in room.peers) {
         const peer = room.peers[clientId];
         const li = document.createElement('li');
@@ -207,6 +258,7 @@ function renderGallery() {
                 <div class="image-placeholder">
                     <canvas id="canvas-${imageId}"></canvas>
                     <div class="locked-overlay" style="display: flex;">🔒</div>
+                    <div class="pending-overlay" style="display: none;"></div>
                 </div>
                 <div class="image-controls">
                     <p class="uploader-info"></p>
@@ -222,25 +274,30 @@ function renderGallery() {
         const isMyImage = image.uploaderId === room.clientId;
         const uploader = room.peers[image.uploaderId]?.username || '...';
         const uploaderIsOnline = !!room.peers[image.uploaderId];
+        card.querySelector('.uploader-info').innerHTML = `Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}`;
+
+        const lockOverlay = card.querySelector('.locked-overlay');
+        const pendingOverlay = card.querySelector('.pending-overlay');
+        const imageControls = card.querySelector('.image-controls');
+
+        if (image.status === 'pending_check') {
+            lockOverlay.style.display = 'none';
+            pendingOverlay.style.display = 'flex';
+            pendingOverlay.textContent = 'Pending host verification...';
+            imageControls.style.display = 'none';
+            continue; // Skip the rest of the rendering for this pending image
+        } else {
+            pendingOverlay.style.display = 'none';
+            imageControls.style.display = 'block';
+        }
 
         const hasHostPerm = image.hostVisibility?.[room.clientId];
         const hasUploaderPerm = image.uploaderVisibility?.[room.clientId];
         const canISee = (isMyImage || hasUploaderPerm) && (isHost || hasHostPerm);
 
         // Update dynamic content
-        card.querySelector('.uploader-info').innerHTML = `Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}`;
+        card.querySelector('.status-info').innerHTML = `Status: ${canISee ? '✅ Access granted' : '❌ Access denied'}`;
         
-        let statusText = '';
-        if (isMyImage) {
-            statusText = `You are the uploader. <br> ${isHost || hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}`;
-        } else if (isHost) {
-            statusText = `You are the host. <br> ${hasUploaderPerm ? '✅ Uploader granted you access' : '❌ Uploader permission needed'}`;
-        } else {
-            statusText = `${hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed'} <br> ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}`;
-        }
-        card.querySelector('.status-info').innerHTML = `Status: ${statusText}`;
-        
-        const lockOverlay = card.querySelector('.locked-overlay');
         lockOverlay.style.display = canISee ? 'none' : 'flex';
 
         // --- FLASHING FIX ---
@@ -389,7 +446,7 @@ async function handleImageUpload(event) {
 
     uploadProgress.classList.remove('hidden');
 
-    const hostInfo = getHostInfo();
+    const hostInfo = await getHostInfo();
     if (!hostInfo.isOnline || !hostInfo.clientId) {
         alert("Host is offline. Cannot upload image.");
         uploadProgress.classList.add('hidden');
@@ -397,48 +454,151 @@ async function handleImageUpload(event) {
         return;
     }
 
+    const contentCheckEnabled = room.roomState.contentCheckEnabled || false;
+
+    try {
+        if (contentCheckEnabled) {
+            await handleSecureUpload(file, hostInfo);
+        } else {
+            await handleStandardUpload(file, hostInfo);
+        }
+    } catch (error) {
+        console.error("Upload failed:", error);
+        alert(`Upload failed: ${error.message}`);
+    } finally {
+        uploadProgress.classList.add('hidden');
+        imageUploader.value = ''; // Reset input
+    }
+}
+
+async function handleStandardUpload(file, hostInfo) {
     const objectURL = URL.createObjectURL(file);
     try {
         const { uploaderPayload, hostPayload, dimensions } = await splitImage(objectURL);
-        
-        // Upload host's half
         const hostHalfBlob = new Blob([JSON.stringify(hostPayload)], { type: 'application/json' });
         const hostHalfUrl = await websim.upload(hostHalfBlob);
-
         const imageId = `img_${Date.now()}_${room.clientId}`;
-        
-        // Store uploader's half locally
+
         localImageHalves[imageId] = uploaderPayload;
         localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
 
-        // Grant mutual permission to uploader and host by default
-        const uploaderVisibility = {
-            [room.clientId]: true, // Uploader grants self
-            [hostInfo.clientId]: true // Uploader grants host
-        };
-        const hostVisibility = {
-            [room.clientId]: true, // Host grants uploader
-            [hostInfo.clientId]: true // Host grants self
-        };
+        const uploaderVisibility = { [room.clientId]: true, [hostInfo.clientId]: true };
+        const hostVisibility = { [room.clientId]: true, [hostInfo.clientId]: true };
 
         room.updateRoomState({
             images: {
                 [imageId]: {
+                    status: 'approved',
                     uploaderId: room.clientId,
-                    hostHalfUrl: hostHalfUrl,
-                    dimensions: dimensions,
+                    hostHalfUrl,
+                    dimensions,
                     uploaderVisibility,
                     hostVisibility,
                 }
             }
         });
-    } catch (error) {
-        console.error("Upload failed:", error);
-        alert("Upload failed. Please try again.");
     } finally {
-        URL.revokeObjectURL(objectURL); // Clean up the object URL to free memory
-        uploadProgress.classList.add('hidden');
-        imageUploader.value = ''; // Reset input
+        URL.revokeObjectURL(objectURL);
+    }
+}
+
+async function handleSecureUpload(file, hostInfo) {
+    // 1. Upload full image to get a temporary URL
+    const fullImageUrl = await websim.upload(file);
+    const imageHash = await hashFile(file);
+    const imageId = `img_${Date.now()}_${room.clientId}`;
+
+    // 2. Create a pending record in roomState
+    await room.updateRoomState({
+        images: {
+            [imageId]: {
+                status: 'pending_check',
+                uploaderId: room.clientId,
+                fullImageUrl,
+                imageHash,
+            }
+        }
+    });
+
+    // 3. Wait for host to approve/reject
+    const unsubscribe = room.collection('roomState').subscribe(async (newRoomState) => {
+        const imageState = newRoomState?.images?.[imageId];
+        if (imageState && imageState.status !== 'pending_check') {
+            unsubscribe(); // Stop listening
+            if (imageState.status === 'approved') {
+                console.log(`Image ${imageId} approved by host. Finalizing upload.`);
+                // 4. If approved, proceed with splitting and finalizing
+                const objectURL = URL.createObjectURL(file);
+                try {
+                    const { uploaderPayload, hostPayload, dimensions } = await splitImage(objectURL);
+                    const hostHalfBlob = new Blob([JSON.stringify(hostPayload)], { type: 'application/json' });
+                    const hostHalfUrl = await websim.upload(hostHalfBlob);
+                    
+                    localImageHalves[imageId] = uploaderPayload;
+                    localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
+
+                    const uploaderVisibility = { [room.clientId]: true, [hostInfo.clientId]: true };
+                    const hostVisibility = { [room.clientId]: true, [hostInfo.clientId]: true };
+                    
+                    await room.updateRoomState({
+                        images: {
+                            [imageId]: {
+                                // Overwrite the pending record with the final data
+                                status: 'approved',
+                                uploaderId: room.clientId,
+                                hostHalfUrl,
+                                dimensions,
+                                uploaderVisibility,
+                                hostVisibility,
+                                fullImageUrl: null, // Clear temp data
+                                imageHash: null,
+                            }
+                        }
+                    });
+                } finally {
+                    URL.revokeObjectURL(objectURL);
+                }
+            } else if (imageState.status === 'rejected') {
+                alert(`Your image upload was rejected by the host. Reason: ${imageState.rejectionReason}`);
+                // 5. If rejected, remove the record
+                await room.updateRoomState({ images: { [imageId]: null } });
+            }
+        }
+    });
+}
+
+async function processPendingImages() {
+    const images = room.roomState.images || {};
+    for (const imageId in images) {
+        const image = images[imageId];
+        if (image.status === 'pending_check') {
+            console.log(`Host processing pending image: ${imageId}`);
+            // Mark as processing to avoid multiple checks
+            await room.updateRoomState({ images: { [imageId]: { status: 'processing' } } });
+
+            try {
+                // Fetch and verify hash
+                const response = await fetch(image.fullImageUrl);
+                const blob = await response.blob();
+                const file = new File([blob], "image");
+                const calculatedHash = await hashFile(file);
+
+                if (calculatedHash !== image.imageHash) {
+                    throw new Error("Image hash mismatch. Potential tampering.");
+                }
+
+                // Check content
+                const checkResult = await checkImageContent(image.fullImageUrl);
+                if (checkResult.safe) {
+                    await room.updateRoomState({ images: { [imageId]: { status: 'approved' } } });
+                } else {
+                    await room.updateRoomState({ images: { [imageId]: { status: 'rejected', rejectionReason: checkResult.reason } } });
+                }
+            } catch (error) {
+                console.error(`Error processing image ${imageId}:`, error);
+                await room.updateRoomState({ images: { [imageId]: { status: 'rejected', rejectionReason: error.message } } });
+            }
+        }
     }
 }
 
@@ -462,6 +622,11 @@ function handlePermissionChange(event) {
     });
 }
 
+function handleContentCheckToggle() {
+    room.updateRoomState({
+        contentCheckEnabled: contentCheckToggle.checked
+    });
+}
 
 // --- Main Application Logic ---
 
@@ -515,6 +680,7 @@ async function main() {
 
     imageUploader.addEventListener('change', handleImageUpload);
     document.body.addEventListener('change', handlePermissionChange);
+    contentCheckToggle.addEventListener('change', handleContentCheckToggle);
     refreshUsersBtn.addEventListener('click', render);
     
     // Auto-refresh every 7 seconds
