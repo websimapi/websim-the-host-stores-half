@@ -22,7 +22,7 @@ const BLOCK_SIZE = 16; // The size of each block for splitting the image
 
 async function getCreatorUsername() {
     if (!creator) {
-        creator = await window.websim.getCreator();
+        creator = await window.websim.getCreatedBy();
     }
     return creator.username;
 }
@@ -222,7 +222,7 @@ function updateContentCheckToggle() {
     }
 }
 
-function renderUserList() {
+async function renderUserList() {
     userList.innerHTML = '';
     const hostInfo = await getHostInfo();
     for (const clientId in room.peers) {
@@ -631,7 +631,7 @@ function handleContentCheckToggle() {
 // --- Main Application Logic ---
 
 async function main() {
-    creator = await window.websim.getCreator();
+    creator = await window.websim.getCreatedBy();
     await room.initialize();
 
     myIdElem.textContent = room.clientId;
