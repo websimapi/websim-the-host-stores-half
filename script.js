@@ -295,14 +295,8 @@ async function main() {
     });
 
     room.onmessage = (event) => {
-        const data = event.data;
-        switch (data.type) {
-            case "connected":
-            case "disconnected":
-                console.log(`Peer connection changed: ${data.username} (${data.clientId}) ${data.type}. Re-rendering user list.`);
-                render();
-                break;
-        }
+        // Presence changes are handled by `subscribePresence`.
+        // This is for other event types.
     };
     
     render();
