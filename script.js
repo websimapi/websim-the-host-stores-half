@@ -13,6 +13,7 @@ const refreshUsersBtn = document.getElementById('refresh-users-btn');
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
 let creator = null;
+const BLOCK_SIZE = 16; // The size of each block for splitting the image
 
 // --- Host/Creator Utilities ---
 
@@ -30,7 +31,25 @@ function getHostInfo() {
 
 // --- Image Processing Utilities ---
 
-function splitImage(dataUrl) {
+// Simple seeded pseudo-random number generator (LCG)
+function createPRNG(seed) {
+    let state = seed;
+    return function() {
+        state = (1103515245 * state + 12345) % 2147483648;
+        return state / 2147483648;
+    };
+}
+
+// Fisher-Yates shuffle using the seeded PRNG
+function shuffleArray(array, seed) {
+    const random = createPRNG(seed);
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+}
+
+async function splitImage(dataUrl) {
     return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -40,25 +59,35 @@ function splitImage(dataUrl) {
             canvas.height = img.height;
             ctx.drawImage(img, 0, 0);
 
-            const halfWidth = Math.ceil(img.width / 2);
-            
-            // Left Half
-            const leftCanvas = document.createElement('canvas');
-            leftCanvas.width = halfWidth;
-            leftCanvas.height = img.height;
-            const leftCtx = leftCanvas.getContext('2d');
-            leftCtx.drawImage(canvas, 0, 0, halfWidth, img.height, 0, 0, halfWidth, img.height);
-            const leftHalfDataUrl = leftCanvas.toDataURL('image/png');
+            const blocks = [];
+            const cols = Math.ceil(img.width / BLOCK_SIZE);
+            const rows = Math.ceil(img.height / BLOCK_SIZE);
 
-            // Right Half
-            const rightCanvas = document.createElement('canvas');
-            rightCanvas.width = img.width - halfWidth;
-            rightCanvas.height = img.height;
-            const rightCtx = rightCanvas.getContext('2d');
-            rightCtx.drawImage(canvas, halfWidth, 0, img.width - halfWidth, img.height, 0, 0, img.width - halfWidth, img.height);
-            const rightHalfDataUrl = rightCanvas.toDataURL('image/png');
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    const blockWidth = (x === cols - 1) ? img.width - x * BLOCK_SIZE : BLOCK_SIZE;
+                    const blockHeight = (y === rows - 1) ? img.height - y * BLOCK_SIZE : BLOCK_SIZE;
+                    const imageData = ctx.getImageData(x * BLOCK_SIZE, y * BLOCK_SIZE, blockWidth, blockHeight);
+                    blocks.push(imageData);
+                }
+            }
+
+            const seed = Math.floor(Math.random() * 1000000000);
+            const indices = Array.from({ length: blocks.length }, (_, i) => i);
+            shuffleArray(indices, seed);
+
+            const midPoint = Math.ceil(indices.length / 2);
+            const uploaderIndices = indices.slice(0, midPoint);
+            const hostIndices = indices.slice(midPoint);
             
-            resolve({ localHalf: leftHalfDataUrl, serverHalf: rightHalfDataUrl });
+            const uploaderBlocks = uploaderIndices.map(i => ({ index: i, data: Array.from(blocks[i].data), width: blocks[i].width, height: blocks[i].height }));
+            const hostBlocks = hostIndices.map(i => ({ index: i, data: Array.from(blocks[i].data), width: blocks[i].width, height: blocks[i].height }));
+
+            resolve({
+                uploaderPayload: { seed, blocks: uploaderBlocks },
+                hostPayload: { blocks: hostBlocks },
+                dimensions: { width: img.width, height: img.height }
+            });
         };
         img.src = dataUrl;
     });
@@ -75,18 +104,26 @@ function dataURLtoBlob(dataurl) {
     return new Blob([u8arr], {type:mime});
 }
 
-async function combineHalves(half1Url, half2Url, targetCanvas) {
-    const [img1, img2] = await Promise.all([
-      new Promise(resolve => { const i = new Image(); i.onload=()=>resolve(i); i.src=half1Url; }),
-      new Promise(resolve => { const i = new Image(); i.onload=()=>resolve(i); i.src=half2Url; }),
-    ]);
-
+async function combineHalves(uploaderPayload, hostPayload, dimensions, targetCanvas) {
+    if (!uploaderPayload || !hostPayload || !dimensions || !targetCanvas) {
+        console.error("Missing data for combining halves.");
+        return;
+    }
+    
+    targetCanvas.width = dimensions.width;
+    targetCanvas.height = dimensions.height;
     const ctx = targetCanvas.getContext('2d');
-    targetCanvas.width = img1.width + img2.width;
-    targetCanvas.height = Math.max(img1.height, img2.height);
 
-    ctx.drawImage(img1, 0, 0);
-    ctx.drawImage(img2, img1.width, 0);
+    const allBlocks = [...uploaderPayload.blocks, ...hostPayload.blocks].sort((a, b) => a.index - b.index);
+
+    const cols = Math.ceil(dimensions.width / BLOCK_SIZE);
+
+    allBlocks.forEach(({ index, data, width, height }) => {
+        const x = (index % cols) * BLOCK_SIZE;
+        const y = Math.floor(index / cols) * BLOCK_SIZE;
+        const imageData = new ImageData(new Uint8ClampedArray(data), width, height);
+        ctx.putImageData(imageData, x, y);
+    });
 }
 
 
@@ -147,7 +184,9 @@ function renderGallery() {
         const isMyImage = image.uploaderId === room.clientId;
         const uploader = room.peers[image.uploaderId]?.username || '...';
 
-        const canISee = (image.hostVisibility?.[room.clientId] && image.uploaderVisibility?.[room.clientId]) || isMyImage;
+        const hasHostPerm = image.hostVisibility?.[room.clientId];
+        const hasUploaderPerm = image.uploaderVisibility?.[room.clientId];
+        const canISee = (hasHostPerm && hasUploaderPerm) || isMyImage;
 
         card.innerHTML = `
             <div class="image-placeholder">
@@ -156,6 +195,12 @@ function renderGallery() {
             </div>
             <div class="image-controls">
                 <p>Uploaded by: ${isMyImage ? 'You' : uploader}</p>
+                <p>Status: 
+                    ${isMyImage ? 'You are the uploader.' : 
+                        (hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed')}
+                    <br> 
+                    ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}
+                </p>
                 <div class="permissions" id="perms-${imageId}"></div>
             </div>
         `;
@@ -174,13 +219,17 @@ async function loadImage(imageId, image) {
     if (!canvas) return;
 
     try {
-        const localHalf = localImageHalves[imageId];
-        const serverHalfUrl = image.serverHalfUrl;
+        // Uploader's half is always from local storage
+        const uploaderPayload = localImageHalves[imageId];
         
-        if (localHalf && serverHalfUrl) {
-            await combineHalves(localHalf, serverHalfUrl, canvas);
+        // Host's half is fetched from the URL
+        const response = await fetch(image.hostHalfUrl);
+        const hostPayload = await response.json();
+        
+        if (uploaderPayload && hostPayload) {
+            await combineHalves(uploaderPayload, hostPayload, image.dimensions, canvas);
         } else {
-            console.error(`Missing half for image ${imageId}`);
+            console.error(`Missing payload half for image ${imageId}`);
         }
     } catch (error) {
         console.error("Error combining image halves:", error);
@@ -237,15 +286,16 @@ async function handleImageUpload(event) {
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
-            const { localHalf, serverHalf } = await splitImage(e.target.result);
-            const serverHalfBlob = dataURLtoBlob(serverHalf);
-
-            const serverHalfUrl = await websim.upload(serverHalfBlob);
+            const { uploaderPayload, hostPayload, dimensions } = await splitImage(e.target.result);
+            
+            // Upload host's half
+            const hostHalfBlob = new Blob([JSON.stringify(hostPayload)], { type: 'application/json' });
+            const hostHalfUrl = await websim.upload(hostHalfBlob);
 
             const imageId = `img_${Date.now()}_${room.clientId}`;
             
-            // Store local half
-            localImageHalves[imageId] = localHalf;
+            // Store uploader's half locally
+            localImageHalves[imageId] = uploaderPayload;
             localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
 
             // Update room state
@@ -256,7 +306,8 @@ async function handleImageUpload(event) {
                 images: {
                     [imageId]: {
                         uploaderId: room.clientId,
-                        serverHalfUrl: serverHalfUrl,
+                        hostHalfUrl: hostHalfUrl,
+                        dimensions: dimensions,
                         uploaderVisibility,
                         hostVisibility,
                     }

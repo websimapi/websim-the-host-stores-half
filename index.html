@@ -26,7 +26,7 @@
     <main>
         <div class="upload-section">
             <h2>Upload an Image</h2>
-            <p>Your image will be split. One half is sent to the host, the other stays in your browser's local storage.</p>
+            <p>Your image will be split into scrambled blocks. One half is sent to the host, the other half and the reconstruction seed stay in your browser's local storage.</p>
             <input type="file" id="image-uploader" accept="image/*" disabled>
             <p id="host-offline-message" class="hidden">Host is offline. Uploading is disabled.</p>
             <div id="upload-progress" class="hidden">Uploading...</div>
@@ -48,7 +48,7 @@
     </main>
 
     <footer>
-        <p>Only users with permission from BOTH the uploader and the host can see the full image.</p>
+        <p>A user must be granted permission by BOTH the uploader and the host to see the full image.</p>
     </footer>
 
     <script src="script.js" type="module"></script>
