@@ -314,12 +314,10 @@ async function main() {
 
     imageUploader.addEventListener('change', handleImageUpload);
     document.body.addEventListener('change', handlePermissionChange);
+    refreshUsersBtn.addEventListener('click', render);
     
     // Auto-refresh every 7 seconds
     setInterval(render, 7000);
-    
-    // The refresh button is no longer needed with auto-refresh
-    refreshUsersBtn.style.display = 'none';
 }
 
 main();
