@@ -189,14 +189,35 @@ function renderUserList() {
 }
 
 function renderGallery() {
-    imageGallery.innerHTML = '';
     const images = room.roomState.images || {};
+    const renderedImageIds = new Set();
     
     Object.keys(images).sort().forEach(imageId => {
+        renderedImageIds.add(imageId);
         const image = images[imageId];
-        const card = document.createElement('div');
-        card.className = 'image-card';
-        card.id = `card-${imageId}`;
+        let card = document.getElementById(`card-${imageId}`);
+        let canvas = document.getElementById(`canvas-${imageId}`);
+
+        // If card doesn't exist, create it.
+        if (!card) {
+            card = document.createElement('div');
+            card.className = 'image-card';
+            card.id = `card-${imageId}`;
+            card.innerHTML = `
+                <div class="image-placeholder">
+                    <canvas id="canvas-${imageId}"></canvas>
+                    <div class="locked-overlay" style="display: flex;">🔒</div>
+                </div>
+                <div class="image-controls">
+                    <p class="uploader-info"></p>
+                    <p class="status-info"></p>
+                    <div class="image-info" id="info-${imageId}"></div>
+                    <div class="permissions" id="perms-${imageId}"></div>
+                </div>
+            `;
+            imageGallery.appendChild(card);
+            canvas = document.getElementById(`canvas-${imageId}`); // Get the new canvas element
+        }
 
         const isMyImage = image.uploaderId === room.clientId;
         const uploader = room.peers[image.uploaderId]?.username || '...';
@@ -206,46 +227,47 @@ function renderGallery() {
         const hasUploaderPerm = image.uploaderVisibility?.[room.clientId];
         const canISee = (isMyImage || hasUploaderPerm) && (isHost || hasHostPerm);
 
+        // Update dynamic content
+        card.querySelector('.uploader-info').innerHTML = `Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}`;
+        
         let statusText = '';
         if (isMyImage) {
-            statusText = `You are the uploader.
-                <br>
-                ${isHost || hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}
-            `;
+            statusText = `You are the uploader. <br> ${isHost || hasHostPerm ? '✅ Host granted you access' : '❌ Host permission needed'}`;
         } else if (isHost) {
-            statusText = `You are the host.
-                <br>
-                ${hasUploaderPerm ? '✅ Uploader granted you access' : '❌ Uploader permission needed'}
-            `;
+            statusText = `You are the host. <br> ${hasUploaderPerm ? '✅ Uploader granted you access' : '❌ Uploader permission needed'}`;
         } else {
-            statusText = `
-                ${hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed'}
-                <br>
-                ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}
-            `;
+            statusText = `${hasUploaderPerm ? '✅ Uploader granted access' : '❌ Uploader permission needed'} <br> ${hasHostPerm ? '✅ Host granted access' : '❌ Host permission needed'}`;
         }
-
-        card.innerHTML = `
-            <div class="image-placeholder">
-                <canvas id="canvas-${imageId}"></canvas>
-                ${!canISee ? `<div class="locked-overlay">🔒</div>` : ''}
-            </div>
-            <div class="image-controls">
-                <p>Uploaded by: ${isMyImage ? 'You' : uploader} ${!uploaderIsOnline ? '(Offline)' : ''}</p>
-                <p>Status: ${statusText}</p>
-                <div class="image-info" id="info-${imageId}"></div>
-                <div class="permissions" id="perms-${imageId}"></div>
-            </div>
-        `;
-        imageGallery.appendChild(card);
+        card.querySelector('.status-info').innerHTML = `Status: ${statusText}`;
         
-        if (canISee) {
+        const lockOverlay = card.querySelector('.locked-overlay');
+        lockOverlay.style.display = canISee ? 'none' : 'flex';
+
+        // --- FLASHING FIX ---
+        // Only load image if we have permission AND it hasn't been rendered yet.
+        if (canISee && !canvas.dataset.rendered) {
             loadImage(imageId, image);
+            canvas.dataset.rendered = 'true';
+        } 
+        // If we lose permission, clear the canvas and reset the rendered flag.
+        else if (!canISee && canvas.dataset.rendered === 'true') {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.dataset.rendered = 'false';
         }
 
+        // These can change, so they are always re-rendered.
         renderImageInfo(imageId, image, isMyImage);
         renderPermissions(imageId, image, isMyImage);
     });
+
+    // Remove cards for images that no longer exist in the room state
+    for (const card of Array.from(imageGallery.children)) {
+        const imageId = card.id.replace('card-', '');
+        if (!renderedImageIds.has(imageId)) {
+            card.remove();
+        }
+    }
 }
 
 async function loadImage(imageId, image) {
