@@ -7,6 +7,7 @@ const imageUploader = document.getElementById('image-uploader');
 const uploadProgress = document.getElementById('upload-progress');
 const imageGallery = document.getElementById('image-gallery');
 const userList = document.getElementById('user-list');
+const userCountElem = document.getElementById('user-count');
 
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
@@ -78,6 +79,7 @@ async function combineHalves(half1Url, half2Url, targetCanvas) {
 function render() {
     renderUserList();
     renderGallery();
+    userCountElem.textContent = Object.keys(room.peers).length;
 }
 
 function renderUserList() {
@@ -263,37 +265,94 @@ async function main() {
 
     myIdElem.textContent = room.clientId;
 
+    // Set initial host if none exists
     if (!room.roomState.hostId || !room.peers[room.roomState.hostId]) {
-        await room.updateRoomState({ hostId: room.clientId });
-        isHost = true;
-        hostIndicatorElem.textContent = '(You are the host)';
-    } else {
-        isHost = room.roomState.hostId === room.clientId;
-        if (isHost) {
-            hostIndicatorElem.textContent = '(You are the host)';
+        // Use a deterministic method to select the first host.
+        // The client with the lexicographically smallest ID becomes the host.
+        const firstPeerId = Object.keys(room.peers).sort()[0];
+        if (room.clientId === firstPeerId) {
+            await room.updateRoomState({ hostId: room.clientId });
         }
     }
-    hostIdElem.textContent = room.roomState.hostId;
 
-
-    room.subscribePresence(() => {
-        // If host leaves, elect a new one
-        if (!room.peers[room.roomState.hostId]) {
-            const newHostId = Object.keys(room.peers)[0];
-            if (newHostId) {
+    room.subscribePresence((currentPresence) => {
+        // --- Host Re-election Logic ---
+        // If the current host is no longer in the room, elect a new one.
+        if (room.roomState.hostId && !currentPresence[room.roomState.hostId]) {
+            // All clients deterministically select the same new host.
+            const newHostId = Object.keys(currentPresence).sort()[0];
+            
+            // The designated new host claims the role. This prevents race conditions.
+            if (newHostId && room.clientId === newHostId) {
                  room.updateRoomState({ hostId: newHostId });
             }
         }
+        
+        // --- Data Cleanup Logic ---
+        // Find which clients have left
+        const currentPeerIds = new Set(Object.keys(currentPresence));
+        const allImageIds = Object.keys(room.roomState.images || {});
+        let stateUpdate = {};
+
+        allImageIds.forEach(imageId => {
+            const image = room.roomState.images[imageId];
+            let imageUpdate = {};
+
+            // If the uploader of an image left, remove the image
+            if (!currentPeerIds.has(image.uploaderId)) {
+                // Mark for deletion
+                if (!stateUpdate.images) stateUpdate.images = {};
+                stateUpdate.images[imageId] = null;
+                // Remove from local storage if this client was the uploader
+                if (localImageHalves[imageId]) {
+                    delete localImageHalves[imageId];
+                    localStorage.setItem('localImageHalves', JSON.stringify(localImageHalves));
+                }
+                return; // Skip to next image
+            }
+
+            // Clean up permissions for users who have left
+            ['hostVisibility', 'uploaderVisibility'].forEach(key => {
+                const visibility = image[key] || {};
+                let visibilityUpdate = {};
+                let changed = false;
+                for (const peerId in visibility) {
+                    if (!currentPeerIds.has(peerId)) {
+                        visibilityUpdate[peerId] = null; // Mark for deletion
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    if (!imageUpdate[key]) imageUpdate[key] = {};
+                    Object.assign(imageUpdate[key], visibilityUpdate);
+                }
+            });
+            
+            if (Object.keys(imageUpdate).length > 0) {
+                if (!stateUpdate.images) stateUpdate.images = {};
+                stateUpdate.images[imageId] = imageUpdate;
+            }
+        });
+
+        // Only the host performs the cleanup to avoid conflicts.
+        if (isHost && Object.keys(stateUpdate).length > 0) {
+            room.updateRoomState(stateUpdate);
+        }
+
         render();
     });
 
     room.subscribeRoomState(() => {
         isHost = room.roomState.hostId === room.clientId;
-        hostIdElem.textContent = room.roomState.hostId;
+        hostIdElem.textContent = room.roomState.hostId || 'N/A';
         hostIndicatorElem.textContent = isHost ? '(You are the host)' : '';
         render();
     });
     
+    // Initial setup based on current state
+    isHost = room.roomState.hostId === room.clientId;
+    hostIdElem.textContent = room.roomState.hostId || 'N/A';
+    hostIndicatorElem.textContent = isHost ? '(You are the host)' : '';
     render();
 
     imageUploader.addEventListener('change', handleImageUpload);
@@ -301,4 +360,3 @@ async function main() {
 }
 
 main();
-
