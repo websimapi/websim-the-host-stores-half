@@ -198,8 +198,18 @@ input[type="file"]::file-selector-button:hover {
     display: none;
 }
 
-#host-indicator {
+#host-indicator.online {
     font-weight: bold;
     color: var(--success-color);
 }
 
+#host-indicator.offline {
+    font-weight: bold;
+    color: var(--error-color);
+}
+
+#host-offline-message {
+    font-size: 0.9em;
+    color: var(--error-color);
+    margin-top: 10px;
+}

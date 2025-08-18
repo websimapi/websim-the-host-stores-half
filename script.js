@@ -7,9 +7,25 @@ const imageUploader = document.getElementById('image-uploader');
 const uploadProgress = document.getElementById('upload-progress');
 const imageGallery = document.getElementById('image-gallery');
 const userList = document.getElementById('user-list');
+const hostOfflineMessage = document.getElementById('host-offline-message');
 
 let isHost = false;
 let localImageHalves = JSON.parse(localStorage.getItem('localImageHalves') || '{}');
+let creator = null;
+
+// --- Host/Creator Utilities ---
+
+function getHostInfo() {
+    if (!creator) return { clientId: null, username: 'Unknown', isOnline: false };
+    
+    for (const clientId in room.peers) {
+        if (room.peers[clientId].username === creator.username) {
+            return { clientId: clientId, username: creator.username, isOnline: true };
+        }
+    }
+    
+    return { clientId: null, username: creator.username, isOnline: false };
+}
 
 // --- Image Processing Utilities ---
 
@@ -75,18 +91,39 @@ async function combineHalves(half1Url, half2Url, targetCanvas) {
 
 // --- UI Rendering ---
 
+function updateHostStatusUI() {
+    const hostInfo = getHostInfo();
+
+    hostIdElem.textContent = hostInfo.username;
+    isHost = hostInfo.clientId === room.clientId;
+
+    if (hostInfo.isOnline) {
+        hostIndicatorElem.textContent = isHost ? '(You are the host)' : '(Online)';
+        hostIndicatorElem.className = 'online';
+        imageUploader.disabled = false;
+        hostOfflineMessage.classList.add('hidden');
+    } else {
+        hostIndicatorElem.textContent = '(Offline)';
+        hostIndicatorElem.className = 'offline';
+        imageUploader.disabled = true;
+        hostOfflineMessage.classList.remove('hidden');
+    }
+}
+
 function render() {
+    updateHostStatusUI();
     renderUserList();
     renderGallery();
 }
 
 function renderUserList() {
     userList.innerHTML = '';
+    const hostInfo = getHostInfo();
     for (const clientId in room.peers) {
         const peer = room.peers[clientId];
         const li = document.createElement('li');
         const isMe = clientId === room.clientId;
-        const isCurrentHost = clientId === room.roomState.hostId;
+        const isCurrentHost = peer.username === hostInfo.username;
         
         li.innerHTML = `
             <img src="${peer.avatarUrl}" alt="${peer.username}">
@@ -259,37 +296,16 @@ function handlePermissionChange(event) {
 // --- Main Application Logic ---
 
 async function main() {
+    creator = await window.websim.getCreator();
     await room.initialize();
 
     myIdElem.textContent = room.clientId;
 
-    if (!room.roomState.hostId || !room.peers[room.roomState.hostId]) {
-        await room.updateRoomState({ hostId: room.clientId });
-        isHost = true;
-        hostIndicatorElem.textContent = '(You are the host)';
-    } else {
-        isHost = room.roomState.hostId === room.clientId;
-        if (isHost) {
-            hostIndicatorElem.textContent = '(You are the host)';
-        }
-    }
-    hostIdElem.textContent = room.roomState.hostId;
-
     room.subscribePresence(() => {
-        // If host leaves, elect a new one
-        if (!room.peers[room.roomState.hostId]) {
-            const newHostId = Object.keys(room.peers)[0];
-            if (newHostId) {
-                room.updateRoomState({ hostId: newHostId });
-            }
-        }
         render();
     });
 
     room.subscribeRoomState(() => {
-        isHost = room.roomState.hostId === room.clientId;
-        hostIdElem.textContent = room.roomState.hostId;
-        hostIndicatorElem.textContent = isHost ? '(You are the host)' : '';
         render();
     });
     
