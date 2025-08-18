@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Host Stores Half</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+      "imports": {
+        "canvas-confetti": "https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.module.mjs"
+      }
+    }
+    </script>
+</head>
+<body>
+    <header>
+        <h1>The Host Stores Half</h1>
+        <p>A free, privacy-focused image hosting service.</p>
+        <div id="connection-status">
+            <p>Your ID: <span id="my-id"></span></p>
+            <p>Host ID: <span id="host-id"></span> <span id="host-indicator"></span></p>
+        </div>
+    </header>
+
+    <main>
+        <div class="upload-section">
+            <h2>Upload an Image</h2>
+            <p>Your image will be split. One half is sent to the host, the other stays in your browser's local storage.</p>
+            <input type="file" id="image-uploader" accept="image/*">
+            <div id="upload-progress" class="hidden">Uploading...</div>
+        </div>
+
+        <div class="gallery-section">
+            <h2>Image Gallery</h2>
+            <div id="image-gallery">
+                <!-- Images will be dynamically inserted here -->
+            </div>
+        </div>
+
+        <div class="users-section">
+            <h2>Connected Users</h2>
+            <ul id="user-list">
+                <!-- User list will be populated here -->
+            </ul>
+        </div>
+    </main>
+
+    <footer>
+        <p>Only users with permission from BOTH the uploader and the host can see the full image.</p>
+    </footer>
+
+    <script src="script.js" type="module"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+
